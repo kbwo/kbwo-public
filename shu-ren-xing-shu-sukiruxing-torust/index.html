@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"  lang="en" data-theme="light">
+<head>
+	<!-- 2024-09-21 Sat 16:09 -->
+	<meta charset="UTF-8" />
+	<meta name="description" content="" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="theme-color" content="orange" />
+	<title>属人性、属スキル性とRust - </title>
+	<link rel="canonical" href="https://kbwo.github.io/kbwo-public/shu-ren-xing-shu-sukiruxing-torust/" /><link rel="icon" type="image/png" href="https://kbwo.github.io/kbwo-public/favicon.png" />
+
+<link rel="apple-touch-icon" type="image/png" sizes="180x180" href="https://kbwo.github.io/kbwo-public/apple-touch-icon.png" />
+<style type="text/css">
+	:root {--accent-color: orange;--contrast-color: #fff;}</style>
+
+		<link type="text/css" rel="stylesheet" href="https://kbwo.github.io/kbwo-public/style.css" />
+
+<script type="text/javascript">
+    function debounce(func, wait) {
+        var timeout;
+
+        return function () {
+            var context = this;
+            var args = arguments;
+            clearTimeout(timeout);
+
+            timeout = setTimeout(function () {
+                timeout = null;
+                func.apply(context, args);
+            }, wait);
+        };
+    }
+
+    // Taken from mdbook
+    // The strategy is as follows:
+    // First, assign a value to each word in the document:
+    //  Words that correspond to search terms (stemmer aware): 40
+    //  Normal words: 2
+    //  First word in a sentence: 8
+    // Then use a sliding window with a constant number of words and count the
+    // sum of the values of the words within the window. Then use the window that got the
+    // maximum sum. If there are multiple maximas, then get the last one.
+    // Enclose the terms in <b>.
+    function makeTeaser(body, terms) {
+        var TERM_WEIGHT = 40;
+        var NORMAL_WORD_WEIGHT = 2;
+        var FIRST_WORD_WEIGHT = 8;
+        var TEASER_MAX_WORDS = 30;
+
+        var stemmedTerms = terms.map(function (w) {
+            return elasticlunr.stemmer(w.toLowerCase());
+        });
+        var termFound = false;
+        var index = 0;
+        var weighted = []; // contains elements of ["word", weight, index_in_document]
+
+        // split in sentences, then words
+        var sentences = body.toLowerCase().split(". ");
+
+        for (var i in sentences) {
+            var words = sentences[i].split(" ");
+            var value = FIRST_WORD_WEIGHT;
+
+            for (var j in words) {
+                var word = words[j];
+
+                if (word.length > 0) {
+                    for (var k in stemmedTerms) {
+                        if (elasticlunr.stemmer(word).startsWith(stemmedTerms[k])) {
+                            value = TERM_WEIGHT;
+                            termFound = true;
+                        }
+                    }
+                    weighted.push([word, value, index]);
+                    value = NORMAL_WORD_WEIGHT;
+                }
+
+                index += word.length;
+                index += 1;  // ' ' or '.' if last word in sentence
+            }
+
+            index += 1;  // because we split at a two-char boundary '. '
+        }
+
+        if (weighted.length === 0) {
+            return body;
+        }
+
+        var windowWeights = [];
+        var windowSize = Math.min(weighted.length, TEASER_MAX_WORDS);
+        // We add a window with all the weights first
+        var curSum = 0;
+        for (var i = 0; i < windowSize; i++) {
+            curSum += weighted[i][1];
+        }
+        windowWeights.push(curSum);
+
+        for (var i = 0; i < weighted.length - windowSize; i++) {
+            curSum -= weighted[i][1];
+            curSum += weighted[i + windowSize][1];
+            windowWeights.push(curSum);
+        }
+
+        // If we didn't find the term, just pick the first window
+        var maxSumIndex = 0;
+        if (termFound) {
+            var maxFound = 0;
+            // backwards
+            for (var i = windowWeights.length - 1; i >= 0; i--) {
+                if (windowWeights[i] > maxFound) {
+                    maxFound = windowWeights[i];
+                    maxSumIndex = i;
+                }
+            }
+        }
+
+        var teaser = [];
+        var startIndex = weighted[maxSumIndex][2];
+        for (var i = maxSumIndex; i < maxSumIndex + windowSize; i++) {
+            var word = weighted[i];
+            if (startIndex < word[2]) {
+                // missing text from index to start of `word`
+                teaser.push(body.substring(startIndex, word[2]));
+                startIndex = word[2];
+            }
+
+            // add <strong> around search terms
+            if (word[1] === TERM_WEIGHT) {
+                teaser.push("<strong>");
+            }
+            startIndex = word[2] + word[0].length;
+            teaser.push(body.substring(word[2], startIndex));
+
+            if (word[1] === TERM_WEIGHT) {
+                teaser.push("</strong>");
+            }
+        }
+        teaser.push("…");
+        return teaser.join("");
+    }
+
+    function formatSearchResultItem(item, terms) {
+        return '<div class="item">'
+            + `<a href="${item.ref}">${item.doc.title}</a>`
+            + `<span>${makeTeaser(item.doc.body, terms)}</span>`
+            + '</div>';
+    }
+
+    function initSearch() {
+        var $searchInput = document.getElementById("search-bar");
+        var $searchResults = document.getElementById("search-results");
+        var MAX_ITEMS = 10;
+
+        var options = {
+            bool: "AND",
+            fields: {
+                title: { boost: 2 },
+                body: { boost: 1 },
+            }
+        };
+        var currentTerm = "";
+        var index;
+
+        var initIndex = async function () {
+            if (index === undefined) {
+                index = fetch("https://kbwo.github.io/kbwo-public/search_index.en.json")
+                    .then(
+                        async function (response) {
+                            return await elasticlunr.Index.load(await response.json());
+                        }
+                    );
+            }
+            let res = await index;
+            return res;
+        }
+
+        $searchInput.addEventListener("keyup", debounce(async function () {
+            var term = $searchInput.value.trim();
+            if (term === currentTerm) {
+                return;
+            }
+            $searchResults.style.display = term === "" ? "none" : "flex";
+            $searchResults.innerHTML = "";
+            currentTerm = term;
+            if (term === "") {
+                return;
+            }
+
+            var results = (await initIndex()).search(term, options);
+            if (results.length === 0) {
+                $searchResults.style.display = "none";
+                return;
+            }
+
+            for (var i = 0; i < Math.min(results.length, MAX_ITEMS); i++) {
+                $searchResults.innerHTML += formatSearchResultItem(results[i], term.split(" "));
+            }
+        }, 150));
+
+        window.addEventListener('click', function (e) {
+            if ($searchResults.style.display == "flex" && !$searchResults.contains(e.target)) {
+                $searchResults.style.display = "none";
+            }
+        });
+    }
+
+    function toggleSearch() {
+        var searchContainer = document.getElementById("search-container");
+        var searchBar = document.getElementById("search-bar");
+        searchContainer.classList.toggle("active");
+        searchBar.toggleAttribute("disabled");
+    }
+
+    if (document.readyState === "complete" ||
+        (document.readyState !== "loading" && !document.documentElement.doScroll)
+    ) {
+        initSearch();
+    } else {
+        document.addEventListener("DOMContentLoaded", initSearch);
+    }
+</script>
+
+			<script type="text/javascript"  src="https://kbwo.github.io/kbwo-public/elasticlunr.min.js"></script>
+
+	<meta property="og:site_name" content="" />
+	<meta property="og:title" content="属人性、属スキル性とRust - " />
+	<meta property="og:url" content="https://kbwo.github.io/kbwo-public/shu-ren-xing-shu-sukiruxing-torust/" />
+	<meta property="og:description" content="" />
+	<meta property="og:image" content="https://kbwo.github.io/kbwo-public/card.png" />
+	<meta property="og:locale" content="en_US" />
+</head>
+
+<body>
+
+	<div id="main" class="container">
+		
+		
+<h1>属人性、属スキル性とRust</h1><p>注意: この記事にはRustやPHPに関連する個人的な経験からくる恨み節による発言が含まれている。</p>
+<h2 id="shu-ren-xing-toshu-sukiruxing">属人性と属スキル性</h2>
+<p>「属人性」と「属スキル性」は区別したほうが良い。
+まずはじめに、属人性と属スキル性について定義というか解説しておく。</p>
+<ul>
+<li>属人性
+<ul>
+<li>特定の個人に依存する性質</li>
+<li>その人物の経験、人脈、暗黙知などに基づく</li>
+<li>属人的な業務は、その人物がいなくなると遂行が困難になる</li>
+<li>例: 特定の顧客との長年の関係、組織の歴史的経緯の理解</li>
+</ul>
+</li>
+<li>属スキル性
+<ul>
+<li>「専門性」、「属技術性」と言い換えてもいい。</li>
+<li>特定のスキルや知識に依存する性質</li>
+<li>明確に定義され、学習や訓練で獲得可能</li>
+<li>属スキル的な業務は、同じスキルを持つ他の人物でも遂行可能</li>
+<li>例: プログラミング言語の習得、会計知識、特定の機器の操作技術</li>
+</ul>
+</li>
+</ul>
+<p>技術者を雇用する必要のある仕事を行うのであれば、そこには「属スキル性」は避けられない。「属スキル性」も避けられるという主張は、多くの場合は、次のどちらかだ。</p>
+<ul>
+<li>スキルの必要のない仕事である。</li>
+<li>本来的にスキルが必要な仕事であるにも関わらず、スキルが必要であることを自覚していない。もしくは、目を背けている。</li>
+</ul>
+<p>後者のようなことを主張する人は、次のようなことを口にする。</p>
+<ul>
+<li>プログラミングは簡単</li>
+<li>Web開発は簡単</li>
+<li>PHPは簡単</li>
+<li>xxxは学習コストが高い</li>
+</ul>
+<p>このような言説は、言うのも聞くのも慎重になるべきだ。</p>
+<p>少なくとも現代の、求められる要件が非常に複雑で、基準となる品質のレベルも高い現代においては、開発は多くの場合相応に難しい。私の経験では、このような主張をする人は、<strong>開発において解決が難しい問題に対して本来自分が本来負う責任を、長期的な（時間的/金銭的）コストに転嫁している。</strong></p>
+<h2 id="ju-ti-li">具体例</h2>
+<p>静的検査のツールの活用やテストコードもないPHPのコードベースを、「簡単」、「学習コストが低い」という点を挙げて褒める人がいる。一理があるように思えるかもしれない（一理もないような言説は世の中に殆どない）が、このような言説は自分の都合のいい部分しか見ていない。</p>
+<p>「簡単」であるのは、開発で難しい部分を気にしなくてよい、「浅瀬でチャパチャパ」するだけのコードであるか、本来品質を担保するべき部分を担保せずに、問題が起きてから対処するような方針を無意識的に行っているからである。（ちなみに、浅瀬でチャパチャパするだけのコードは、本当にそれで要件を充足させられるのであれば、全く問題ない。また、問題を予防する方針にしていても、問題が起きてから対処することは往々にしてあるが、それは全く本件と関係がない。）</p>
+<p>私は上記のような壊滅的状況に追い込まれたPHPのコードベースを定期的に触る星の下に生まれてしまっているので、このようなプロジェクトでどのような問題が顕在化し、それにも関わらず無視され、別の長期的なコストに転嫁されているのかを理解している。その例は以下のようなものである。</p>
+<ol>
+<li>パフォーマンスを考慮したコードを書かない（書けない）ため、サーバのマシンスペックに頼る。（<strong>サーバコストへの転嫁</strong>）</li>
+<li>セキュリティを考慮したコードを書かない（書けない）ため、なかったことにする。（<strong>将来、脆弱性が露呈する時の担当者へメンテナンスコストを転嫁</strong>）</li>
+<li>静的検査を使用しないため、自動的、半自動的に解決することができる問題でもツールではなく人間が問題を解決する（<strong>問題解決にかかる時間への転嫁。問題解決力のある人員を用意する、人材コスト、教育コストへの転嫁</strong>）</li>
+<li>テストや型をまともに書かないため、テストや型が第一級のドキュメントになり得ることを無視して個人のコード理解力に頼る（<strong>型がなくてもコードを理解できる特異な能力を持つ人員を用意する、人材コスト、教育コストへの転嫁</strong>）</li>
+</ol>
+<p>3, 4はまさに「<strong>属人性</strong>」である。属スキル性のように思えるかもしれないが、ここでいう問題解決力やコードの理解力は、多くの場合普遍的なスキルというよりは、時間をかけて担当者がその問題に関わったことで熟成された暗黙知によるものである。暗黙知は次の世代に継承されないため、担当者が退職した場合、たとえスキルのある人材を投入しても以前のような組織としての問題解決力を取り戻すには相当な時間がかかる。</p>
+<p>例に挙げたような問題を抱えているプロジェクトは、一見誰の責任でもないように思えるため、延々とこの問題が放置される。そしていずれ誰も手を付けたくないプロジェクトになる。サーバコストは際限なく増え、手遅れと言ってもいいほど深刻化してからようやく高いコストを払って人材を用意してもすぐに離れていく（高い給与を得られる程度にスキルを持つ人材は仕事を選ぶことが可能だからだ）。
+静的検査が強いとされている言語やツールを使用すればこのような状態に陥ることを極力防止でき、また、悪しきコードが放置されないため悪循環に陥る可能性を低くできるのだが、「学習コスト」を理由にして使用することが避けられることも少なくない。 <strong>「学習コスト」は考慮するのに、上記に挙げた多大な長期的コストについては無視されるのである。</strong></p>
+<p>あるいは、静的検査ツールを使用するスキルのある人員を用意するための人材コストを理由に忌避されることがある（Rust人材は高い、など）。これも私は長期的なコストに比べれば安いものだと考えている。優秀な人材を精査するためのリクルーティングコストと、その人材を継続的に雇うコストは確かにそれなりに高いが、それは払うに値するものであるからだ。上に挙げたような転嫁された長期的コストは悪循環に陥るが、まともな人材を用意するのは多くの場合、好循環になる。（SESのような、ある程度の条件を満たせばスキルに関わらず人がいればいるほど儲かる人月商売の場合は除く。）</p>
+<ul>
+<li>人ではなく、特定のツールを使用することができるという「スキル」に依存するため、<strong>「属人性」を排除し、「属スキル性」が得られる。</strong></li>
+<li>コストのトレードオフを考慮して選択されたツールを使用し、優秀な人材がいる企業は、マーケティングさえ間違えなければ技術力のある（あるいは、ありそうな）企業として評価され、他の優秀な人材からも一目置かれる。リファラル採用という選択肢も出てくる。そのためリクルーティングコストは徐々に少なくなる。</li>
+<li>優秀な人材は、他社の成果物へのレビューのような直接的な教育的効果はもちろん、例に挙げたような問題に陥らせないための予防策や、すでに陥っている問題に対しての対応策を施した成果物を残すため、それ自体が教育的な効果をもたらす。</li>
+</ul>
+<p>とはいえ、給料の安い、低スキルな人材を並列で稼働させて運営できたほうが、見かけ上は低リスクなため、経営層に近い人間ほどのそのような選択をしたがるのは分かる。実際にそのような運営をさせてしまうのは、経営層ではなく現場レベルに近い人間が、上記のような「見えざる問題」をアピールしないのが悪い。見えざる問題はどれだけのコストを生んでいるのかが可視化しづらいため、強く、しつこいくらいにアピールをし続けなければならないのだ。</p>
+<p>あ
+い</p>
+<h2 id="matometoxin-nojiao-bi">まとめと心の叫び</h2>
+<ul>
+<li>属人性と属スキル性は分けて考えろ</li>
+<li>属人性は排除するのが望ましいが、属スキル性は排除できない。うまく付き合え</li>
+<li>簡単のように思えるツールのトレードオフを認識しろ</li>
+<li>高スキルを持つ人材の仕事の中には、低スキルが何人、何百人合わさってもできない仕事も多い
+<ul>
+<li>低コスト人材の並列稼働が合う仕事もある。どちらの場合もあることを認識するが大事</li>
+<li>教育と採用を頑張れ</li>
+<li>ついでに人月の神話を読め</li>
+</ul>
+</li>
+<li>トレードオフを認識できないのを経営層のせいにするな
+<ul>
+<li>現場しか意識できないことを主張するのは現場の責任だ
+<ul>
+<li>それでもだめ、もしくは主張しにくい環境ならそれは確かに環境がクソだね</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h2 id="zhu-yi-dian">注意点</h2>
+<p>たとえ属人ではなく属スキルの状態であっても、一人のスキルに依存していて、他の人はできないというような状態は望ましいものではない。</p>
+<h2 id="can-kao">参考</h2>
+<p>六本木ではたらくソフトウェアエンジニアへのよくある質問とその答え (FAQ) (2015 - 2017) - hayato
+<a href="https://hayatoito.github.io/2017/faq/#rust">https://hayatoito.github.io/2017/faq/#rust</a></p>
+<blockquote>
+<p>コストがかかる処理を書くときはプログラマにちゃんと罪悪感を感じてもらうような API デザインが意図的に多く採用されています。未熟なプログラマが、知らないうちに効率の悪いコードを書くのを防ぐ教育的効果があります。</p>
+</blockquote>
+<p><a href="https://hayatoito.github.io/2017/faq/#rust-is-hard">https://hayatoito.github.io/2017/faq/#rust-is-hard</a></p>
+<blockquote>
+<p>Rust は学習コストが高いプログラミング言語と思われていますが、そもそも（ある程度大規模な）「プログラムを正しく」書くこと自体が普通の人間には相当難しいことです。これまでの学習コストが低いとされているプログラミング言語は、最初のほうだけ「（なんとなく）動いている」プログラムを書くのを助けてくれるだけであり、「正しいプログラム」を書くことについては何も助けてくれず放置プレイです。最終的にユーザーにすべての責任・負担がかかります。
+Rust は「正しいプログラム」を人間が書くまできちんと指摘してくるので学習コストが高くなってしまいますが、それらはいずれは何らかの形で身につけなければいけないことなのでむしろありがたいことです。これまではユーザーが担っていた責任の一部を、「コンパイラに押し付ける」ことができます。
+Rust は「学習コストが高い」言語というよりは「プログラミングの学習コストを可視化してくれる」言語といったほうがいいかもしれません。これまで「雰囲気でプログラミング」してきた人にとって Rust の学習コストが高く感じるのは、きちんと可視化がうまくいっている結果です。</p>
+</blockquote>
+<p><a href="https://hayatoito.github.io/2017/faq/#dynamic-programming-language-is-dead">https://hayatoito.github.io/2017/faq/#dynamic-programming-language-is-dead</a></p>
+<blockquote>
+<p>動的言語の「動的」性がどうしても必要になるプログラムというのは 1%もないのですが、実際はそれ以上の割合で動的言語が使用されています。</p>
+</blockquote>
+<p>私の言いたいことが大部分詰まっている。</p>
+<p>技術者と作業員 - 登 大遊 (Daiyuu Nobori) の個人日記 <a href="https://softether.hatenadiary.org/entry/20050427/p1">https://softether.hatenadiary.org/entry/20050427/p1</a></p>
+<blockquote>
+<ol>
+<li>本当の意味での技術者
+通常、大勢の人たちが無理だと思っていたり、どれだけ試行錯誤してもうまくいかないような (たとえばコンピュータに関連する) 技術的な難題を、人並み外れた凄まじい問題解決能力で解決し、たちどころに目的を達成してしまう能力を持つ特殊な人たちのこと。多くの場合、置換不可能である。誰でも勉強すればなれる訳ではない。</li>
+<li>作業員的な技術者
+上記を除いたその他大勢の、コンピュータに関する仕事に携わっている人たちのこと。たとえば特殊な装置（もともと上記の技術者が設計したものである）を扱う専門技能を勉強して身につけていたり、プログラミングに関する知識を勉強して身につけていたりして、そうやって身につけた能力を、与えられた指示通りに使って仕事をして給料をもらう。多くの場合、置換可能である。ほとんど誰でも勉強すればなることができる。運良くコンピュータ業界はまだ儲かっているので、他の同様の職業（たとえば工事作業員とか）と比べると、報酬は割高である。この潮流に便乗した産業が、人材派遣ビジネス・資格ビジネスなど。</li>
+</ol>
+</blockquote>
+
+
+	</div>
+	<footer id="site-footer">
+</footer>
+
+
+</body>
+</html>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/</loc>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/about/</loc>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/first/</loc>
+        <lastmod>2024-09-20</lastmod>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/page/1/</loc>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/shu-ren-xing-shu-sukiruxing-torust/</loc>
+        <lastmod>2024-09-22</lastmod>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/tags/</loc>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/tags/rust/</loc>
+    </url>
+    <url>
+        <loc>https://kbwo.github.io/kbwo-public/tags/zola/</loc>
+    </url>
+</urlset>
