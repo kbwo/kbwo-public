@@ -3,4 +3,4 @@ title = "About Me"
 path = "about"
 +++
 
-Hello, World!
+そのうち書く

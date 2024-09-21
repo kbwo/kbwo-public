@@ -6,4 +6,10 @@ date = 2024-09-20
 tags = ["zola"]
 +++
 
-# 公開文書をGitHub Pagesに移行
+公開文書をGitHub Pagesに移行中
+
+テスト
+
+```javascript
+console.log('Hello world')
+```
